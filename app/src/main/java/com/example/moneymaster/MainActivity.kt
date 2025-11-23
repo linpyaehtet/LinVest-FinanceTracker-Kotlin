@@ -2,8 +2,6 @@ package com.example.moneymaster
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
@@ -17,21 +15,16 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.moneymaster.adapter.TransactionAdapter
 import com.example.moneymaster.model.Transaction
-import com.example.moneymaster.utils.BackupUtils
 import com.example.moneymaster.utils.DataManager
 import com.google.android.material.floatingactionbutton.FloatingActionButton
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
-import java.io.File
-import java.text.NumberFormat
-import java.util.Locale
 import com.google.android.material.bottomnavigation.BottomNavigationView
+import java.text.NumberFormat
 import java.util.Currency
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var transactionAdapter: TransactionAdapter
     private val dateFormatter = java.text.SimpleDateFormat("MMM yyyy", Locale.US)
-    private val gson = Gson()
     private var isBalanceVisible = true
     private var currentTransactionType = TransactionType.ALL
     private var allTransactions = mutableListOf<Transaction>()
@@ -40,20 +33,32 @@ class MainActivity : AppCompatActivity() {
         EXPENSE, INCOME, ALL
     }
 
+    private val addTransactionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val newTransaction = result.data?.getSerializableExtra(AddEditTransactionActivity.EXTRA_TRANSACTION) as? Transaction
+            if (newTransaction != null) {
+                allTransactions.add(0, newTransaction.copy(id = System.currentTimeMillis()))
+                DataManager.saveTransactions(this, allTransactions)
+                filterTransactions()
+                Toast.makeText(this, "Transaction added", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private val editTransactionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK) {
             val updatedTransaction = result.data?.getSerializableExtra(
-                EditTransactionActivity.EXTRA_UPDATED_TRANSACTION
+                AddEditTransactionActivity.EXTRA_TRANSACTION
             ) as? Transaction
             if (updatedTransaction != null) {
-                // Find and update the transaction
-                val position = transactionAdapter.getTransactions().indexOfFirst { it.date == updatedTransaction.date }
-                if (position != -1) {
-                    transactionAdapter.updateTransaction(position, updatedTransaction)
-                    DataManager.saveTransactions(this, transactionAdapter.getTransactions())
-                    updateTotalAmount()
+                // Find and update the transaction in allTransactions
+                val index = allTransactions.indexOfFirst { it.id == updatedTransaction.id }
+                if (index != -1) {
+                    allTransactions[index] = updatedTransaction
+                    DataManager.saveTransactions(this, allTransactions)
+                    filterTransactions() // This will update adapter and total amount
                 }
             }
         }
@@ -84,7 +89,7 @@ class MainActivity : AppCompatActivity() {
         // Set up FAB click listener
         findViewById<FloatingActionButton>(R.id.addTransactionButton).setOnClickListener {
             val intent = Intent(this, AddEditTransactionActivity::class.java)
-            startActivityForResult(intent, ADD_TRANSACTION_REQUEST)
+            addTransactionLauncher.launch(intent)
         }
 
         // Set up balance visibility toggle
@@ -99,9 +104,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupRecyclerView() {
         transactionAdapter = TransactionAdapter(
-            onTransactionUpdated = {
-                DataManager.saveTransactions(this, transactionAdapter.getTransactions())
-                updateTotalAmount()
+            onTransactionDeleted = { transaction ->
+                deleteTransaction(transaction)
             },
             editTransactionLauncher = editTransactionLauncher
         )
@@ -109,6 +113,15 @@ class MainActivity : AppCompatActivity() {
         recyclerView.apply {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = transactionAdapter
+        }
+    }
+
+    private fun deleteTransaction(transaction: Transaction) {
+        val removed = allTransactions.removeIf { it.id == transaction.id }
+        if (removed) {
+            DataManager.saveTransactions(this, allTransactions)
+            filterTransactions()
+            Toast.makeText(this, "Transaction deleted", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -140,7 +153,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadSavedTransactions() {
-        allTransactions = DataManager.loadTransactions(this).toMutableList()
+        val loadedTransactions = DataManager.loadTransactions(this)
+        var nextId = System.currentTimeMillis()
+        allTransactions = loadedTransactions.map { transaction ->
+            // Assign unique IDs to transactions that don't have one (for older versions)
+            if (transaction.id == 0L) {
+                transaction.copy(id = nextId++)
+            } else {
+                transaction
+            }
+        }.toMutableList()
         if (allTransactions.isEmpty()) {
             Toast.makeText(this, "No saved transactions found", Toast.LENGTH_SHORT).show()
         } else {
@@ -152,40 +174,6 @@ class MainActivity : AppCompatActivity() {
     private fun setupCurrentDate() {
         val dateButton = findViewById<Button>(R.id.dateButton)
         dateButton.text = dateFormatter.format(java.util.Date())
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == ADD_TRANSACTION_REQUEST && resultCode == RESULT_OK) {
-            data?.let {
-                val title = it.getStringExtra(EXTRA_TITLE) ?: return
-                val amount = it.getDoubleExtra(EXTRA_AMOUNT, 0.0)
-                val date = it.getStringExtra(EXTRA_DATE) ?: return
-                val category = it.getStringExtra(EXTRA_CATEGORY) ?: return
-                val notes = it.getStringExtra(EXTRA_NOTES) ?: ""
-                val isExpense = it.getBooleanExtra(EXTRA_IS_EXPENSE, true)
-
-                // Create new transaction
-                val transaction = Transaction(
-                    title = title,
-                    amount = amount,
-                    date = date,
-                    category = category,
-                    notes = notes,
-                    isExpense = isExpense
-                )
-
-                // Add to allTransactions list
-                allTransactions.add(0, transaction)
-
-                // Save all transactions
-                DataManager.saveTransactions(this, allTransactions)
-                Toast.makeText(this, "Transaction saved successfully", Toast.LENGTH_SHORT).show()
-
-                // Update the display
-                filterTransactions()
-            }
-        }
     }
 
     private fun getCurrencyFormatter(): NumberFormat {
@@ -334,18 +322,8 @@ class MainActivity : AppCompatActivity() {
     fun updateCurrency() {
         // Update all amounts with new currency
         updateTotalAmount()
-        
+
         // Update transaction list
         transactionAdapter.notifyDataSetChanged()
-    }
-
-    companion object {
-        const val ADD_TRANSACTION_REQUEST = 1
-        const val EXTRA_TITLE = "extra_title"
-        const val EXTRA_AMOUNT = "extra_amount"
-        const val EXTRA_DATE = "extra_date"
-        const val EXTRA_CATEGORY = "extra_category"
-        const val EXTRA_NOTES = "extra_notes"
-        const val EXTRA_IS_EXPENSE = "extra_is_expense"
     }
 }

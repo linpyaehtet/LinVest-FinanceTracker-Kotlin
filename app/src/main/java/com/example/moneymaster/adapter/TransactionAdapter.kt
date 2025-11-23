@@ -18,7 +18,7 @@ import java.util.Currency
 import java.util.Locale
 
 class TransactionAdapter(
-    private val onTransactionUpdated: () -> Unit,
+    private val onTransactionDeleted: (transaction: Transaction) -> Unit,
     private val editTransactionLauncher: ActivityResultLauncher<Intent>
 ) : RecyclerView.Adapter<TransactionAdapter.TransactionViewHolder>() {
     private val transactions = mutableListOf<Transaction>()
@@ -40,14 +40,6 @@ class TransactionAdapter(
     fun addTransaction(transaction: Transaction) {
         transactions.add(0, transaction) // Add to the beginning of the list
         notifyItemInserted(0)
-    }
-
-    fun removeTransaction(position: Int) {
-        if (position >= 0 && position < transactions.size) {
-            transactions.removeAt(position)
-            notifyItemRemoved(position)
-            onTransactionUpdated()
-        }
     }
 
     fun updateTransaction(position: Int, transaction: Transaction) {
@@ -103,8 +95,9 @@ class TransactionAdapter(
                             .setTitle("Delete Transaction")
                             .setMessage("Are you sure you want to delete this transaction?")
                             .setPositiveButton("Delete") { _, _ ->
-                                removeTransaction(position)
-                                onTransactionUpdated()
+                                if (adapterPosition != RecyclerView.NO_POSITION) {
+                                    onTransactionDeleted(transactions[adapterPosition])
+                                }
                             }
                             .setNegativeButton("Cancel", null)
                             .show()
@@ -131,4 +124,4 @@ class TransactionAdapter(
             dateText.text = transaction.date
         }
     }
-} 
+}
